@@ -1,0 +1,21 @@
+# build artifacts
+data/
+.cache/
+
+# gradle
+.gradle/
+**/build/
+**/out/
+
+# ide
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+
+# os
+.DS_Store
+Thumbs.db
+
+# env overrides (keep templates)
+env/*.local.env
