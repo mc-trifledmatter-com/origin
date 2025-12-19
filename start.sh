@@ -16,6 +16,7 @@ DOCKER_DIR="$SCRIPT_DIR/docker"
 # flags
 FORCE_BUILD=false
 BUILD_ONLY=false
+BUILD_PLUGINS_ONLY=false
 PRESERVE_WORLDS=false
 CLEANUP_CACHE=true
 
@@ -36,6 +37,7 @@ for arg in "$@"; do
     case $arg in
         --build) FORCE_BUILD=true ;;
         --build-only) BUILD_ONLY=true; FORCE_BUILD=true ;;
+        --build-plugins) BUILD_PLUGINS_ONLY=true ;;
         --preserve-worlds) PRESERVE_WORLDS=true ;;
         --no-cleanup) CLEANUP_CACHE=false ;;
         --mc-version=*) MINECRAFT_VERSION="${arg#*=}" ;;
@@ -46,6 +48,7 @@ for arg in "$@"; do
             echo "options:"
             echo "  --build               force rebuild before starting"
             echo "  --build-only          build without starting"
+            echo "  --build-plugins       compile plugins only and copy to data/mods"
             echo "  --preserve-worlds     keep world data during rebuild"
             echo "  --no-cleanup          keep intermediate build files in cache"
             echo "  --mc-version=X.X.X    minecraft version (default: $MINECRAFT_VERSION)"
@@ -584,7 +587,7 @@ seed_configs() {
     seed_if_missing() {
         local target="$1"
         local content="$2"
-        [[ ! -f "$target" ]] && echo "$content" > "$target"
+        [[ -f "$target" ]] || echo "$content" > "$target"
     }
     
     seed_file() {
@@ -1210,46 +1213,39 @@ assemble_data() {
     FABRIC_JAR="$CACHE_DIR/fabric-server-$MINECRAFT_VERSION-$FABRIC_LOADER_VERSION.jar"
     MODS_DIR="$CACHE_DIR/mods"
 
-    # preserve worlds if requested
-    if [[ "$PRESERVE_WORLDS" == true ]] && [[ -d "$DATA_DIR" ]]; then
-        mkdir -p "$CACHE_DIR/worlds_backup"
-        for world in world world_nether world_the_end; do
-            [[ -d "$DATA_DIR/$world" ]] && mv "$DATA_DIR/$world" "$CACHE_DIR/worlds_backup/"
-        done
-    fi
-
-    rm -rf "$DATA_DIR"
+    # create directories if they don't exist
     mkdir -p "$DATA_DIR/mods"
     mkdir -p "$DATA_DIR/config"
 
-    # restore worlds
-    if [[ "$PRESERVE_WORLDS" == true ]] && [[ -d "$CACHE_DIR/worlds_backup" ]]; then
-        for world in "$CACHE_DIR/worlds_backup"/*/; do
-            [[ -d "$world" ]] && mv "$world" "$DATA_DIR/"
-        done
-        rm -rf "$CACHE_DIR/worlds_backup"
-    fi
-
+    # update server jar and eula
     cp "$FABRIC_JAR" "$DATA_DIR/server.jar"
-    echo "eula=true" > "$DATA_DIR/eula.txt"
-    cp "$CONFIG_DIR/server/"* "$DATA_DIR/" 2>/dev/null || true
-    cp "$CONFIG_DIR/access/"* "$DATA_DIR/" 2>/dev/null || true
+    [[ -f "$DATA_DIR/eula.txt" ]] || echo "eula=true" > "$DATA_DIR/eula.txt"
+    
+    # copy server config (don't overwrite existing)
+    for cfg in "$CONFIG_DIR/server/"*; do
+        [[ -f "$cfg" ]] && [[ ! -f "$DATA_DIR/$(basename "$cfg")" ]] && cp "$cfg" "$DATA_DIR/"
+    done
+    for cfg in "$CONFIG_DIR/access/"*; do
+        [[ -f "$cfg" ]] && [[ ! -f "$DATA_DIR/$(basename "$cfg")" ]] && cp "$cfg" "$DATA_DIR/"
+    done
 
-    # copy mod config directories (geyser, floodgate, etc.)
+    # copy mod config directories (don't overwrite existing)
     for mod_config_dir in "$CONFIG_DIR/mods"/*/; do
         if [[ -d "$mod_config_dir" ]]; then
             mod_name=$(basename "$mod_config_dir")
             mkdir -p "$DATA_DIR/config/$mod_name"
-            cp -r "$mod_config_dir"/* "$DATA_DIR/config/$mod_name/" 2>/dev/null || true
+            for cfg in "$mod_config_dir"/*; do
+                [[ -f "$cfg" ]] && [[ ! -f "$DATA_DIR/config/$mod_name/$(basename "$cfg")" ]] && cp "$cfg" "$DATA_DIR/config/$mod_name/"
+            done
         fi
     done
 
-    # copy downloaded mods
+    # copy downloaded mods (always update)
     if [[ -d "$MODS_DIR" ]]; then
         cp "$MODS_DIR"/*.jar "$DATA_DIR/mods/" 2>/dev/null || true
     fi
 
-    # copy compiled custom mods from plugins/
+    # copy compiled custom mods from plugins/ (always update)
     for mod_dir in "$PLUGINS_SRC_DIR"/*/; do
         if [[ -d "$mod_dir" ]]; then
             mod_name=$(basename "$mod_dir")
@@ -1348,6 +1344,26 @@ do_start() {
 
 # === main ===
 check_docker
+
+# build plugins only mode
+if [[ "$BUILD_PLUGINS_ONLY" == true ]]; then
+    compile_mods
+    
+    # copy compiled mods to data/mods
+    mkdir -p "$DATA_DIR/mods"
+    for mod_dir in "$PLUGINS_SRC_DIR"/*/; do
+        if [[ -d "$mod_dir" ]]; then
+            mod_name=$(basename "$mod_dir")
+            jar_file=$(find "$mod_dir/build/libs" -name "*.jar" ! -name "*-sources.jar" ! -name "*-dev.jar" 2>/dev/null | head -n1)
+            if [[ -n "$jar_file" ]]; then
+                cp "$jar_file" "$DATA_DIR/mods/"
+                log_ok "copied $mod_name to data/mods/"
+            fi
+        fi
+    done
+    
+    exit 0
+fi
 
 if [[ "$FORCE_BUILD" == true ]] || needs_build; then
     if needs_build && [[ "$FORCE_BUILD" == false ]]; then

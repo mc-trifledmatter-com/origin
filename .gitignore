@@ -19,3 +19,14 @@ Thumbs.db
 
 # env overrides (keep templates)
 env/*.local.env
+
+config/
+.cache/
+data/
+docker/
+env/
+plugins/
+services/
+shared/
+tooling/
+tools/
